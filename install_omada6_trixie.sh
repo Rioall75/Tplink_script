@@ -21,7 +21,7 @@ apt update && apt upgrade -y
 # ------------------------------------------------------------
 #  Installer OpenJDK 17
 # ------------------------------------------------------------
-echo "=== ☕ Installation de Java (OpenJDK 17) ==="
+echo "=== Installation de Java (OpenJDK 17) ==="
 echo "deb http://deb.debian.org/debian bookworm main contrib non-free-firmware" | tee /etc/apt/sources.list.d/bookworm-java.list
 apt update
 apt install -y openjdk-17-jre
@@ -82,8 +82,11 @@ systemctl status tpeap --no-pager | grep Active
 echo "============================================================"
 echo "Installation terminée avec succès !"
 echo "Accédez à votre interface Web :"
-echo "     https://<IP_de_votre_serveur>:8043"
+hostIP=$(hostname -I | awk '{print $1}')
+echo -e "\e[0;32m[~] Interface Web Omada : https://${hostIP}:8043\e[0m"
+echo ""
 echo ""
 echo " Sauvegardes : /opt/tplink/EAPController/data/autobackup"
 echo " Service Omada : systemctl status tpeap"
 echo "============================================================"
+
