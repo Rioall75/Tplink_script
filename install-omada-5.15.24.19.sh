@@ -1,128 +1,124 @@
 #!/bin/bash
 # ============================================================
-# TP-Link Omada Software Controller INSTALL
-# Version : 5.15.24.19 (Linux x64)
-# OS      : Ubuntu 20.04 / 22.04 / 24.04
-# Author  : Adapted by Ben Mvouama
+# Install Omada Software Controller 5.15.24.19 on Ubuntu 22.04 (jammy)
+# - Installe Java 17 (JDK) + jsvc
+# - Ajoute repo MongoDB 8.0 (jammy) + installe mongodb-org
+# - Installe Omada via .deb (URL figée)
+# - Fix permissions /opt/tplink/EAPController
+# - Démarre tpeap
 # ============================================================
 
-set -e
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
-echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-echo "TP-Link Omada Software Controller - Installer"
-echo "Version : 5.15.24.19"
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+OMADA_DEB_URL="https://static.tp-link.com/upload/software/2025/202508/20250802/omada_v5.15.24.19_linux_x64_20250724152622.deb"
+OMADA_DEB_NAME="omada_v5.15.24.19_linux_x64_20250724152622.deb"
 
-# ------------------------------------------------------------
-# Root check
-# ------------------------------------------------------------
-echo "[+] Vérification exécution en root"
+log() { echo -e "\n[+] $*"; }
+warn() { echo -e "\n[!] $*" >&2; }
+
+# ---- Root check
+log "Vérification exécution en root"
 if [ "$(id -u)" -ne 0 ]; then
-  echo -e "\e[1;31m[!] Le script doit être exécuté avec sudo.\e[0m"
+  warn "Lance le script avec sudo : sudo ./install-omada-5.15.24.19-jammy.sh"
   exit 1
 fi
 
-# ------------------------------------------------------------
-# CPU AVX check (MongoDB >= 5)
-# ------------------------------------------------------------
-echo "[+] Vérification support CPU AVX"
-if ! lscpu | grep -iq avx; then
-  echo -e "\e[1;31m[!] CPU sans AVX détecté. MongoDB requis par Omada 5.x ne fonctionnera pas.\e[0m"
-  exit 1
-fi
-
-# ------------------------------------------------------------
-# OS check
-# ------------------------------------------------------------
-echo "[+] Vérification OS"
+# ---- OS check (jammy)
+log "Vérification OS (Ubuntu 22.04 jammy)"
 . /etc/os-release
-
-if [[ "$ID" != "ubuntu" ]]; then
-  echo -e "\e[1;31m[!] OS non supporté (Ubuntu requis).\e[0m"
+if [[ "${ID:-}" != "ubuntu" ]]; then
+  warn "OS non supporté : ${ID:-unknown} (Ubuntu requis)"
+  exit 1
+fi
+if [[ "${VERSION_ID:-}" != "22.04" && "${UBUNTU_CODENAME:-}" != "jammy" ]]; then
+  warn "Ce script est prévu pour Ubuntu 22.04 (jammy). Détecté : ${VERSION_ID:-unknown} / ${UBUNTU_CODENAME:-unknown}"
   exit 1
 fi
 
-case "$VERSION_ID" in
-  20.04) OsVer=focal ;;
-  22.04) OsVer=jammy ;;
-  24.04) OsVer=noble ;;
-  *)
-    echo -e "\e[1;31m[!] Version Ubuntu non supportée.\e[0m"
-    exit 1
-    ;;
-esac
+# ---- CPU AVX check (MongoDB >= 5)
+log "Vérification CPU (AVX requis pour MongoDB 5+)"
+if ! lscpu | grep -iq avx; then
+  warn "CPU sans AVX détecté. MongoDB récent ne tournera pas → Omada aussi."
+  exit 1
+fi
 
-echo "[~] Ubuntu $VERSION_ID détecté"
+# ---- Base packages
+log "Installation des prérequis (wget/curl/gnupg/ca-certificates/lsb-release)"
+apt-get update -y
+apt-get install -y wget curl gnupg ca-certificates lsb-release
 
-# ------------------------------------------------------------
-# Pré-requis
-# ------------------------------------------------------------
-echo "[+] Installation des prérequis"
-apt update -qq
-apt install -y wget curl gnupg ca-certificates lsb-release
+# ---- Java + jsvc
+log "Installation Java 17 (JDK) + JSVC"
+apt-get install -y openjdk-17-jdk jsvc
 
-# ------------------------------------------------------------
-# MongoDB 8.0 (compatible Omada 5.15.x)
-# ------------------------------------------------------------
-echo "[+] Installation MongoDB 8.0"
+# Force java 17 si plusieurs java installés
+if update-alternatives --list java >/dev/null 2>&1; then
+  if [ -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java ]; then
+    update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java || true
+  fi
+fi
+
+log "Vérification Java"
+java -version || true
+
+# ---- MongoDB 8.0 repo + install
+log "Ajout du dépôt MongoDB 8.0 (jammy) + installation mongodb-org"
 curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
   | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
 
-echo "deb [ arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] \
-https://repo.mongodb.org/apt/ubuntu ${OsVer}/mongodb-org/8.0 multiverse" \
-> /etc/apt/sources.list.d/mongodb-org-8.0.list
+echo "deb [ arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/8.0 multiverse" \
+  > /etc/apt/sources.list.d/mongodb-org-8.0.list
 
-apt update -qq
-apt install -y mongodb-org
+apt-get update -y
+apt-get install -y mongodb-org
+systemctl enable --now mongod
 
-systemctl enable mongod
-systemctl start mongod
+log "Vérification MongoDB"
+systemctl is-active mongod >/dev/null && echo "mongod: active" || (warn "mongod n'est pas actif" && exit 1)
+ss -lntp | grep -q ":27017" && echo "Mongo écoute sur 27017" || warn "Mongo ne semble pas écouter sur 27017 (à vérifier)"
 
-# ------------------------------------------------------------
-# Java (Omada 5.x recommandé : Java 17)
-# ------------------------------------------------------------
-echo "[+] Installation OpenJDK 17"
-apt install -y openjdk-17-jre-headless
-
-# ------------------------------------------------------------
-# JSVC
-# ------------------------------------------------------------
-echo "[+] Installation JSVC"
-apt install -y jsvc
-
-# ------------------------------------------------------------
-# Télécharger Omada 5.15.24.19
-# ------------------------------------------------------------
-echo "[+] Téléchargement Omada Software Controller 5.15.24.19"
+# ---- Download + install Omada
+log "Téléchargement Omada 5.15.24.19"
 cd /tmp
+wget -O "${OMADA_DEB_NAME}" "${OMADA_DEB_URL}"
 
-OMADA_DEB="omada_v5.15.24.19_linux_x64_20250724152622.deb"
-OMADA_URL="https://static.tp-link.com/upload/software/2025/202508/20250802/${OMADA_DEB}"
+log "Installation Omada (.deb)"
+dpkg -i "/tmp/${OMADA_DEB_NAME}" || apt-get -f install -y
 
-wget -O "${OMADA_DEB}" "${OMADA_URL}"
+# ---- Ensure omada user exists (normalement créé par le .deb)
+if ! id omada >/dev/null 2>&1; then
+  log "Utilisateur 'omada' absent → création (system user)"
+  useradd -r -s /usr/sbin/nologin omada
+fi
 
-# ------------------------------------------------------------
-# Installation Omada
-# ------------------------------------------------------------
-echo "[+] Installation Omada Software Controller 5.15.24.19"
-dpkg -i "${OMADA_DEB}" || apt -f install -y
+# ---- Permissions
+log "Fix permissions /opt/tplink/EAPController"
+if [ -d /opt/tplink/EAPController ]; then
+  chown -R omada:omada /opt/tplink/EAPController
+else
+  warn "/opt/tplink/EAPController introuvable après install (à vérifier)"
+fi
 
-# ------------------------------------------------------------
-# Démarrage service
-# ------------------------------------------------------------
-echo "[+] Démarrage du service Omada"
-systemctl enable tpeap
-systemctl start tpeap
+# ---- Start Omada
+log "Démarrage Omada (tpeap)"
+systemctl enable tpeap >/dev/null 2>&1 || true
+systemctl restart tpeap || true
 
-# ------------------------------------------------------------
-# Résultat
-# ------------------------------------------------------------
-hostIP=$(hostname -I | awk '{print $1}')
+log "Attente démarrage (20s)"
+sleep 20
 
-echo -e "\n\e[0;32m[✓] Omada Software Controller 5.15.24.19 installé avec succès\e[0m"
-echo -e "\e[0;32m[~] Accès Web : https://${hostIP}:8043\e[0m"
-echo ""
-echo "Logs       : /opt/tplink/EAPController/logs/"
-echo "Sauvegardes: /opt/tplink/EAPController/data/autobackup"
-echo "Service    : systemctl status tpeap"
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+log "Statut tpeap"
+systemctl status tpeap --no-pager || true
+
+# ---- Ports check (indicatif)
+log "Vérification ports Omada (8043/8088/29810-29814)"
+ss -lntp | grep -E ":8043|:8088|:2981[0-4]" || warn "Ports Omada non détectés (si 1er démarrage, attendre encore 30-60s)"
+
+# ---- Final info
+HOST_IP="$(hostname -I | awk '{print $1}')"
+echo -e "\n============================================================"
+echo "[✓] Installation terminée"
+echo "[~] Accès Omada : https://${HOST_IP}:8043"
+echo "Logs : /opt/tplink/EAPController/logs/server.log"
+echo "============================================================"
