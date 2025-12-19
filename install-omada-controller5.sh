@@ -1,68 +1,128 @@
 #!/bin/bash
-#title           :install-omada-controller.sh
-#description     :Installer for TP-Link Omada Software Controller
-#supported       :Ubuntu 20.04, Ubuntu 22.04, Ubuntu 24.04
-#author          :monsn0
-#date            :2021-07-29
-#updated         :2025-03-31
+# ============================================================
+# TP-Link Omada Software Controller INSTALL
+# Version : 5.15.24.19 (Linux x64)
+# OS      : Ubuntu 20.04 / 22.04 / 24.04
+# Author  : Adapted by Ben Mvouama
+# ============================================================
+
+set -e
 
 echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 echo "TP-Link Omada Software Controller - Installer"
-echo "https://github.com/monsn0/omada-installer"
-echo -e "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+echo "Version : 5.15.24.19"
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 
-echo "[+] Verifying running as root"
-if [ `id -u` -ne 0 ]; then
-  echo -e "\e[1;31m[!] Script requires to be ran as root. Please rerun using sudo. \e[0m"
-  exit
+# ------------------------------------------------------------
+# Root check
+# ------------------------------------------------------------
+echo "[+] Vérification exécution en root"
+if [ "$(id -u)" -ne 0 ]; then
+  echo -e "\e[1;31m[!] Le script doit être exécuté avec sudo.\e[0m"
+  exit 1
 fi
 
-echo "[+] Verifying supported CPU"
+# ------------------------------------------------------------
+# CPU AVX check (MongoDB >= 5)
+# ------------------------------------------------------------
+echo "[+] Vérification support CPU AVX"
 if ! lscpu | grep -iq avx; then
-    echo -e "\e[1;31m[!] Your CPU does not support AVX. MongoDB 5.0+ requires an AVX supported CPU. \e[0m"
-    exit
+  echo -e "\e[1;31m[!] CPU sans AVX détecté. MongoDB requis par Omada 5.x ne fonctionnera pas.\e[0m"
+  exit 1
 fi
 
-echo "[+] Verifying supported OS"
-OS=$(hostnamectl status | grep "Operating System" | sed 's/^[ \t]*//')
-echo "[~] $OS"
+# ------------------------------------------------------------
+# OS check
+# ------------------------------------------------------------
+echo "[+] Vérification OS"
+. /etc/os-release
 
-if [[ $OS = *"Ubuntu 20.04"* ]]; then
-    OsVer=focal
-elif [[ $OS = *"Ubuntu 22.04"* ]]; then
-    OsVer=jammy
-elif [[ $OS = *"Ubuntu 24.04"* ]]; then
-    OsVer=noble
-else
-    echo -e "\e[1;31m[!] Script currently only supports Ubuntu 20.04, 22.04 or 24.04! \e[0m"
-    exit
+if [[ "$ID" != "ubuntu" ]]; then
+  echo -e "\e[1;31m[!] OS non supporté (Ubuntu requis).\e[0m"
+  exit 1
 fi
 
-echo "[+] Installing script prerequisites"
-apt-get -qq update
-apt-get -qq install gnupg curl &> /dev/null
+case "$VERSION_ID" in
+  20.04) OsVer=focal ;;
+  22.04) OsVer=jammy ;;
+  24.04) OsVer=noble ;;
+  *)
+    echo -e "\e[1;31m[!] Version Ubuntu non supportée.\e[0m"
+    exit 1
+    ;;
+esac
 
-echo "[+] Importing the MongoDB 8.0 PGP key and creating the APT repository"
-curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
-echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $OsVer/mongodb-org/8.0 multiverse" > /etc/apt/sources.list.d/mongodb-org-8.0.list
-apt-get -qq update
+echo "[~] Ubuntu $VERSION_ID détecté"
 
-echo "[+] Downloading the latest Omada Software Controller package"
-OmadaPackageUrl=$(curl -fsSL https://support.omadanetworks.com/us/product/omada-software-controller/?resourceType=download | grep -oPi '<a[^>]*href="\K[^"]*linux_x64_[0-9]*\.deb[^"]*' | head -n 1)
-OmadaPackageBasename=$(basename $OmadaPackageUrl)
-curl -sLo /tmp/$OmadaPackageBasename $OmadaPackageUrl
+# ------------------------------------------------------------
+# Pré-requis
+# ------------------------------------------------------------
+echo "[+] Installation des prérequis"
+apt update -qq
+apt install -y wget curl gnupg ca-certificates lsb-release
 
-# Package dependencies
-echo "[+] Installing MongoDB 8.0"
-apt-get -qq install mongodb-org &> /dev/null
-echo "[+] Installing OpenJDK 21 JRE (headless)"
-apt-get -qq install openjdk-21-jre-headless &> /dev/null
-echo "[+] Installing JSVC"
-apt-get -qq install jsvc &> /dev/null
+# ------------------------------------------------------------
+# MongoDB 8.0 (compatible Omada 5.15.x)
+# ------------------------------------------------------------
+echo "[+] Installation MongoDB 8.0"
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc \
+  | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
 
-echo "[+] Installing Omada Software Controller $(echo $OmadaPackageBasename | tr "_" "\n" | sed -n '4p')"
-dpkg -i /tmp/$OmadaPackageBasename &> /dev/null
+echo "deb [ arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] \
+https://repo.mongodb.org/apt/ubuntu ${OsVer}/mongodb-org/8.0 multiverse" \
+> /etc/apt/sources.list.d/mongodb-org-8.0.list
 
-hostIP=$(hostname -I | cut -f1 -d' ')
-echo -e "\e[0;32m[~] Omada Software Controller has been successfully installed! :)\e[0m"
-echo -e "\e[0;32m[~] Please visit https://${hostIP}:8043 to complete the inital setup wizard.\e[0m\n"
+apt update -qq
+apt install -y mongodb-org
+
+systemctl enable mongod
+systemctl start mongod
+
+# ------------------------------------------------------------
+# Java (Omada 5.x recommandé : Java 17)
+# ------------------------------------------------------------
+echo "[+] Installation OpenJDK 17"
+apt install -y openjdk-17-jre-headless
+
+# ------------------------------------------------------------
+# JSVC
+# ------------------------------------------------------------
+echo "[+] Installation JSVC"
+apt install -y jsvc
+
+# ------------------------------------------------------------
+# Télécharger Omada 5.15.24.19
+# ------------------------------------------------------------
+echo "[+] Téléchargement Omada Software Controller 5.15.24.19"
+cd /tmp
+
+OMADA_DEB="omada_v5.15.24.19_linux_x64_20250724152622.deb"
+OMADA_URL="https://static.tp-link.com/upload/software/2025/202508/20250802/${OMADA_DEB}"
+
+wget -O "${OMADA_DEB}" "${OMADA_URL}"
+
+# ------------------------------------------------------------
+# Installation Omada
+# ------------------------------------------------------------
+echo "[+] Installation Omada Software Controller 5.15.24.19"
+dpkg -i "${OMADA_DEB}" || apt -f install -y
+
+# ------------------------------------------------------------
+# Démarrage service
+# ------------------------------------------------------------
+echo "[+] Démarrage du service Omada"
+systemctl enable tpeap
+systemctl start tpeap
+
+# ------------------------------------------------------------
+# Résultat
+# ------------------------------------------------------------
+hostIP=$(hostname -I | awk '{print $1}')
+
+echo -e "\n\e[0;32m[✓] Omada Software Controller 5.15.24.19 installé avec succès\e[0m"
+echo -e "\e[0;32m[~] Accès Web : https://${hostIP}:8043\e[0m"
+echo ""
+echo "Logs       : /opt/tplink/EAPController/logs/"
+echo "Sauvegardes: /opt/tplink/EAPController/data/autobackup"
+echo "Service    : systemctl status tpeap"
+echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
