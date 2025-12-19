@@ -1,154 +1,138 @@
 #!/bin/bash
-# ============================================================
-# TP-Link Omada Software Controller - UPGRADE (FR)
-# Cible : Omada v5.15.24.19 (Linux x64)
-# OS    : Ubuntu 20.04 / 22.04 / 24.04
-# ============================================================
+#title           :upgrade-omada-controller.sh
+#description     :Upgrade for TP-Link Omada Software Controller
+#supported       :Ubuntu 20.04, Ubuntu 22.04, Ubuntu 24.04
+#author          :adapted from monsn0 (upgrade version)
+#updated         :2025-12-19
 
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-OMADA_DEB_URL="https://static.tp-link.com/upload/software/2025/202508/20250802/omada_v5.15.24.19_linux_x64_20250724152622.deb"
-OMADA_DEB_NAME="omada_v5.15.24.19_linux_x64_20250724152622.deb"
+# (Optionnel) Forcer une version précise (recommandé en prod) :
+# OMADA_DEB_URL="https://static.tp-link.com/upload/software/2025/202508/20250802/omada_v5.15.24.19_linux_x64_20250724152622.deb"
+OMADA_DEB_URL=""
 
-log(){ echo -e "\n[+] $*"; }
-warn(){ echo -e "\n[!] $*" >&2; }
-
-echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+echo -e "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 echo "TP-Link Omada Software Controller - UPGRADE"
-echo "Cible : v5.15.24.19"
-echo "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
+echo "Base : https://github.com/monsn0/omada-installer"
+echo -e "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n"
 
-# --- Root check
-log "Vérification exécution en root"
+echo "[+] Vérification exécution en root"
 if [ "$(id -u)" -ne 0 ]; then
-  warn "Exécute avec sudo : sudo ./upgrade-omada-5.15.24.19.sh"
+  echo -e "\e[1;31m[!] Le script doit être exécuté en root (sudo). \e[0m"
   exit 1
 fi
 
-# --- OS check
-log "Vérification OS Ubuntu"
-. /etc/os-release
-if [[ "${ID:-}" != "ubuntu" ]]; then
-  warn "OS non supporté : ${ID:-unknown} (Ubuntu requis)"
-  exit 1
-fi
-
-case "${VERSION_ID:-}" in
-  20.04) UB_CODENAME="focal" ;;
-  22.04) UB_CODENAME="jammy" ;;
-  24.04) UB_CODENAME="noble" ;;
-  *) warn "Version Ubuntu non supportée : ${VERSION_ID:-unknown}"; exit 1 ;;
-esac
-echo "[~] Ubuntu ${VERSION_ID} (${UB_CODENAME})"
-
-# --- Controller already installed?
-log "Vérification présence contrôleur (tpeap)"
+echo "[+] Vérification présence du contrôleur (tpeap)"
 if ! command -v tpeap >/dev/null 2>&1 && [ ! -f /etc/init.d/tpeap ]; then
-  warn "Le contrôleur Omada ne semble pas installé (tpeap introuvable)."
-  warn "Ce script est prévu pour un UPGRADE (pas une nouvelle install)."
+  echo -e "\e[1;31m[!] Contrôleur non détecté (tpeap introuvable). Script prévu pour UPGRADE uniquement. \e[0m\n"
   exit 1
 fi
 
-# --- CPU AVX logic (prudente)
-log "Vérification CPU (AVX) - utile si MongoDB >= 5"
-HAS_AVX=0
-if lscpu | grep -iq avx; then HAS_AVX=1; fi
-
-if command -v mongod >/dev/null 2>&1; then
-  MONGO_MAJOR="$(mongod --version 2>/dev/null | awk '/db version/ {print $3}' | cut -d. -f1 || true)"
-  if [[ -n "${MONGO_MAJOR}" && "${MONGO_MAJOR}" -ge 5 && "${HAS_AVX}" -ne 1 ]]; then
-    warn "MongoDB ${MONGO_MAJOR}.x détecté mais CPU sans AVX → Mongo ne peut pas tourner correctement."
-    exit 1
-  fi
-else
-  if [[ "${HAS_AVX}" -ne 1 ]]; then
-    warn "CPU sans AVX et MongoDB absent : installation MongoDB 5+ impossible sur ce CPU."
-    warn "Upgrade annulé."
-    exit 1
-  fi
+echo "[+] Vérification CPU (AVX)"
+if ! lscpu | grep -iq avx; then
+  echo -e "\e[1;31m[!] CPU sans AVX. MongoDB 5+ (donc Omada récent) requiert AVX. \e[0m"
+  exit 1
 fi
 
-# --- Prérequis
-log "Installation prérequis (wget/curl/gnupg/ca-certificates/lsb-release)"
-apt-get update -y
-apt-get install -y wget curl gnupg ca-certificates lsb-release
+echo "[+] Vérification OS"
+OS=$(hostnamectl status | grep "Operating System" | sed 's/^[ \t]*//')
+echo "[~] $OS"
 
-# --- Backup data (si présent)
-DATA_DIR="/opt/tplink/EAPController/data"
-BACKUP_DIR="/opt/tplink/EAPController/data-backup"
-TS="$(date +%Y%m%d-%H%M%S)"
-
-log "Sauvegarde locale des données (si présentes)"
-if [ -d "${DATA_DIR}" ]; then
-  mkdir -p "${BACKUP_DIR}"
-  tar -C "/opt/tplink/EAPController" -czf "${BACKUP_DIR}/data_${TS}.tar.gz" "data" || true
-  echo "[~] Backup : ${BACKUP_DIR}/data_${TS}.tar.gz"
+if [[ $OS = *"Ubuntu 20.04"* ]]; then
+  OsVer=focal
+elif [[ $OS = *"Ubuntu 22.04"* ]]; then
+  OsVer=jammy
+elif [[ $OS = *"Ubuntu 24.04"* ]]; then
+  OsVer=noble
 else
-  echo "[~] Pas de dossier data trouvé (OK si installation incomplète)."
+  echo -e "\e[1;31m[!] Support Ubuntu : 20.04 / 22.04 / 24.04 uniquement. \e[0m"
+  exit 1
 fi
 
-# --- Stop Omada
-log "Arrêt du contrôleur Omada"
+echo "============================================================"
+echo "ATTENTION : avant upgrade, fais un backup dans l’UI Omada :"
+echo "Settings → Maintenance → Backup"
+echo "============================================================"
+sleep 2
+
+echo "[+] Sauvegarde locale du dossier data (si présent)"
+if [ -d /opt/tplink/EAPController/data ]; then
+  TS=$(date +%Y%m%d-%H%M%S)
+  mkdir -p /opt/tplink/EAPController/data-backup
+  tar -C /opt/tplink/EAPController -czf "/opt/tplink/EAPController/data-backup/data_${TS}.tar.gz" data || true
+  echo "[~] Backup local : /opt/tplink/EAPController/data-backup/data_${TS}.tar.gz"
+fi
+
+echo "[+] Arrêt Omada (tpeap)"
 systemctl stop tpeap 2>/dev/null || true
 /etc/init.d/tpeap stop 2>/dev/null || true
 
-# --- Java + jsvc (recommandé : JDK 17)
-log "Installation / validation Java 17 (JDK) + JSVC"
-apt-get install -y openjdk-17-jdk jsvc
+echo "[+] Installation prérequis"
+apt-get -qq update
+apt-get -qq install gnupg curl ca-certificates &> /dev/null
 
-# Force Java 17 si possible
-if update-alternatives --list java >/dev/null 2>&1; then
-  if [ -x /usr/lib/jvm/java-17-openjdk-amd64/bin/java ]; then
-    update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java || true
-  fi
+echo "[+] Ajout dépôt MongoDB 8.0 + installation/maj"
+curl -fsSL https://www.mongodb.org/static/pgp/server-8.0.asc | gpg -o /usr/share/keyrings/mongodb-server-8.0.gpg --dearmor
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu $OsVer/mongodb-org/8.0 multiverse" > /etc/apt/sources.list.d/mongodb-org-8.0.list
+apt-get -qq update
+apt-get -qq install mongodb-org &> /dev/null
+systemctl enable mongod &>/dev/null || true
+systemctl start mongod &>/dev/null || true
+
+echo "[+] Installation Java (recommandé : JDK 17) + JSVC"
+apt-get -qq install openjdk-17-jdk jsvc &> /dev/null
+
+echo "[+] Téléchargement du package Omada (.deb)"
+if [ -z "$OMADA_DEB_URL" ]; then
+  OmadaPackageUrl=$(curl -fsSL "https://support.omadanetworks.com/us/product/omada-software-controller/?resourceType=download" \
+    | grep -oPi '<a[^>]*href="\K[^"]*linux_x64_[0-9]*\.deb[^"]*' \
+    | head -n 1)
+else
+  OmadaPackageUrl="$OMADA_DEB_URL"
 fi
-java -version || true
 
-# --- Mongo : on ne force pas un changement de version en upgrade
-log "Vérification MongoDB (démarrage si présent)"
-if systemctl list-unit-files | grep -q "^mongod\.service"; then
-  systemctl start mongod || true
-  systemctl enable mongod >/dev/null 2>&1 || true
+if [ -z "${OmadaPackageUrl:-}" ]; then
+  echo -e "\e[1;31m[!] Impossible de récupérer l’URL du .deb Omada. Renseigne OMADA_DEB_URL en haut du script. \e[0m"
+  exit 1
 fi
 
-# --- Download + install Omada deb
-log "Téléchargement du .deb Omada v5.15.24.19"
-cd /tmp
-wget -O "${OMADA_DEB_NAME}" "${OMADA_DEB_URL}"
+OmadaPackageBasename=$(basename "$OmadaPackageUrl")
+curl -sLo "/tmp/$OmadaPackageBasename" "$OmadaPackageUrl"
 
-log "Installation / Upgrade du contrôleur Omada"
-dpkg -i "/tmp/${OMADA_DEB_NAME}" || apt-get -f install -y
-
-# --- Ensure user + permissions
-log "Correction des droits (omada:omada)"
-if ! id omada >/dev/null 2>&1; then
-  useradd -r -s /usr/sbin/nologin omada
+echo "[+] Upgrade Omada via dpkg (fallback apt -f si besoin)"
+set +e
+dpkg -i "/tmp/$OmadaPackageBasename" &> /dev/null
+RC=$?
+set -e
+if [ $RC -ne 0 ]; then
+  apt-get -f install -y &> /dev/null
+  dpkg -i "/tmp/$OmadaPackageBasename" &> /dev/null
 fi
-if [ -d /opt/tplink/EAPController ]; then
+
+echo "[+] Réparation des droits (important)"
+# Selon le .deb, le user peut être 'omada' (souvent) ou 'tp-link'
+if id omada >/dev/null 2>&1; then
   chown -R omada:omada /opt/tplink/EAPController
+  echo "[~] chown appliqué : omada:omada"
+elif id tp-link >/dev/null 2>&1; then
+  chown -R tp-link:tp-link /opt/tplink/EAPController
+  echo "[~] chown appliqué : tp-link:tp-link"
+else
+  echo "[!] Aucun user omada/tp-link trouvé, chown ignoré."
 fi
 
-# --- Start Omada
-log "Démarrage du contrôleur Omada"
+echo "[+] Démarrage Omada (tpeap)"
 systemctl daemon-reload || true
-systemctl enable tpeap >/dev/null 2>&1 || true
+systemctl enable tpeap &>/dev/null || true
 systemctl start tpeap 2>/dev/null || true
 /etc/init.d/tpeap start 2>/dev/null || true
 
-log "Attente démarrage (20s)"
-sleep 20
+sleep 15
 
-log "Statut tpeap"
-systemctl status tpeap --no-pager || true
+echo "[+] Vérification statut"
+systemctl status tpeap --no-pager | sed -n '1,12p' || true
 
-log "Vérification ports (8043/8088/29810-29814)"
-ss -lntp | grep -E ":8043|:8088|:2981[0-4]" || warn "Ports Omada non détectés (attendre 30-60s ou consulter les logs)"
-
-HOST_IP="$(hostname -I | awk '{print $1}')"
-echo -e "\n============================================================"
-echo "[✓] Upgrade terminé"
-echo "[~] Accès Omada : https://${HOST_IP}:8043"
-echo "Logs : /opt/tplink/EAPController/logs/server.log"
-echo "Backup data (si existant) : ${BACKUP_DIR}/data_${TS}.tar.gz"
-echo "============================================================"
+hostIP=$(hostname -I | cut -f1 -d' ')
+echo -e "\e[0;32m[~] Upgrade terminé.\e[0m"
+echo -e "\e[0;32m[~] Accès : https://${hostIP}:8043 \e[0m\n"
